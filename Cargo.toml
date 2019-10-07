@@ -1,0 +1,28 @@
+[package]
+name = "ancable-rs"
+version = "0.1.0"
+authors = ["yfractal <yfractal@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[lib]
+name = "protos"
+path = "src/protos/mod.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+redis = "0.12.0"
+futures = "0.1"
+websocket = "0.23.0"
+tokio = "0.1"
+bytes = "0.4.12"
+
+grpcio = "0.4"
+protobuf = "2.0"
+tokio-tungstenite = "0.9"
+tungstenite = "0.9"
+serde_json = "1.0"
+
+[build-dependencies]
+protoc-grpcio = "1.0"
