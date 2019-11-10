@@ -369,7 +369,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
             addr_to_header_inner.lock().unwrap().insert(addr, headers);
 
-            Ok(None)
+            let extra_headers = vec![
+                (String::from("Sec-WebSocket-Protocol"), String::from("actioncable-v1-json")),
+            ];
+
+            Ok(Some(extra_headers))
         };
 
         let addr_to_header_inner = addr_to_header.clone();
