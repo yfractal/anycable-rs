@@ -1,6 +1,6 @@
 // #![deny(warnings, rust_2018_idioms)]
 mod ws_server;
-
+mod server;
 // extern crate websocket;
 
 use std::thread;
@@ -43,6 +43,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::unbounded();
     // it's not clever to use thread with tokio :(.
     // but it seems like that tokio doesn't have good way to handle task priority.
+    server::connections::hello();
     let redis_handler = thread::spawn(|| {
         do_sub(tx);
     });
