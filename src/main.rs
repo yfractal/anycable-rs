@@ -43,13 +43,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::unbounded();
     // it's not clever to use thread with tokio :(.
     // but it seems like that tokio doesn't have good way to handle task priority.
-    server::connections::hello();
+
     let redis_handler = thread::spawn(|| {
         do_sub(tx);
     });
 
     tokio::run(lazy(|| {
-        ws_server::start_ws_server(rx)
+        // ws_server::start_ws_server(rx);
+        server::start_ws_server(rx)
     }));
 
     redis_handler.join().unwrap();
