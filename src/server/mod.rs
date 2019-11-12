@@ -294,9 +294,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         streams_inner.lock().unwrap().remove(&stream.name, addr, stream.channel.to_string());
                                         connections.lock().unwrap().remove_conn_stream(&addr, stream.name.to_string(), channel.as_str().unwrap().to_string());
                                     }
-
-                                    connections.lock().unwrap().
-                                        remove_conn_channel(&addr, channel.as_str().unwrap().to_string());
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
                                     let data = &v["data"];
@@ -315,9 +312,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         streams_inner.lock().unwrap().put(stream, addr, channel.as_str().unwrap().to_string());
                                         connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
                                     }
-
-                                    connections.lock().unwrap()
-                                        .add_channel_to_conn(&addr, channel.as_str().unwrap().to_string());
                                 }
                             }
 
