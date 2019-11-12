@@ -134,60 +134,6 @@ impl Subscribers {
 }
 
 #[derive(Debug)]
-struct AddrToChanels {
-    inner: HashMap<SocketAddr, HashSet<String>>
-}
-
-impl AddrToChanels {
-    pub fn new() -> AddrToChanels {
-        AddrToChanels {
-            inner: HashMap::new()
-        }
-    }
-
-    pub fn get(&self, addr: SocketAddr) -> &HashSet<String> {
-        self.inner.get(&addr).unwrap()
-    }
-
-    pub fn get_vec(&self, addr: SocketAddr) -> Vec<String> {
-        let mut channels = Vec::new();
-        for c in self.get(addr).iter() {
-            channels.push(c.to_string());
-        }
-
-        channels
-    }
-
-    pub fn remove_addr(&mut self, addr: SocketAddr) {
-        self.inner.remove(&addr);
-    }
-
-    pub fn remove_channel(&mut self, addr: SocketAddr, channel: String) -> bool {
-        match self.inner.get_mut(&addr) {
-            Some(channels) => {
-                channels.remove(&channel);
-                true
-            },
-            None => {
-                false
-            }
-        }
-    }
-
-    pub fn put(&mut self, addr: SocketAddr, channel: String) {
-        match self.inner.get_mut(&addr) {
-            Some(channels) => {
-                channels.insert(channel);
-            },
-            None => {
-                let mut channels = HashSet::new();
-                channels.insert(channel);
-                self.inner.insert(addr, channels);
-            }
-        }
-    }
-}
-
 struct RedisConsumer {
     connections: Arc<Mutex<connections::Connections>>,
     msg_queue: mpsc::UnboundedReceiver<String>,
@@ -289,8 +235,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     let connections = Arc::new(Mutex::new(connections::Connections::new()));
     let streams = Arc::new(Mutex::new(Streams::new()));
     let subscribers = Arc::new(Mutex::new(Subscribers::new()));
-    let addr_to_channels = Arc::new(Mutex::new(AddrToChanels::new()));
-
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
 
     let rerdis_consumer = RedisConsumer{
@@ -311,8 +255,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
         let streams_inner2 = streams.clone();
         let subscribers_inner = subscribers.clone();
         let subscribers_inner2 = subscribers.clone();
-        let addr_to_channels_inner = addr_to_channels.clone();
-        let addr_to_channels_inner2 = addr_to_channels.clone();
         let addr_to_header_inner = addr_to_header.clone();
 
         let client_inner = client.clone();
@@ -393,7 +335,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                     }
 
                                     subscribers_inner.lock().unwrap().remove_subscriber(addr, channel.as_str().unwrap().to_string());
-                                    addr_to_channels_inner.lock().unwrap().remove_channel(addr, channel.as_str().unwrap().to_string());
+                                    connections.lock().unwrap().
+                                        remove_conn_channel(&addr, channel.as_str().unwrap().to_string());
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
                                     let data = &v["data"];
@@ -413,7 +356,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         subscribers_inner.lock().unwrap().put(addr, channel.as_str().unwrap().to_string(), stream);
                                     }
 
-                                    addr_to_channels_inner.lock().unwrap().put(addr, channel.as_str().unwrap().to_string());
+                                    connections.lock().unwrap()
+                                        .add_channel_to_conn(&addr, channel.as_str().unwrap().to_string());
                                 }
                             }
 
@@ -433,11 +377,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                         tokio::spawn(connection.then(move |_| {
                             rpc_disconnect(client_inner3,
                                            connections_inner.lock().unwrap().get_connection_identifiers(&addr),
-                                           addr_to_channels_inner2.lock().unwrap().get_vec(addr));
+                                           connections_inner.lock().unwrap().get_conn_channels_vec(&addr));
 
-                            connections_inner.lock().unwrap().remove_connection(&addr);
 
-                            let channels = addr_to_channels_inner2.lock().unwrap().get_vec(addr);
+                            // find connection's channels
+                            let channels = connections_inner.lock().unwrap().get_conn_channels_vec(&addr);
 
                             for channel in channels.iter() {
                                 for stream in subscribers_inner2.lock().unwrap().get(addr, channel.to_string()).iter() {
@@ -447,7 +391,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                 subscribers_inner2.lock().unwrap().remove_subscriber(addr, channel.to_string());
                             }
 
-                            addr_to_channels_inner2.lock().unwrap().remove_addr(addr);
+                            connections_inner.lock().unwrap().remove_connection(&addr);
                             println!("Connection {} closed.", addr);
                             Ok(())
                         }));
