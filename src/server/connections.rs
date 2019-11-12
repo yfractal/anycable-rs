@@ -7,10 +7,28 @@ use tungstenite::protocol::Message;
 
 type Sender = mpsc::UnboundedSender<Message>;
 
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub struct Stream {
+    pub name: String,
+    pub channel: String
+}
+
+
+impl Stream {
+    pub fn new(name: String, channel: String) -> Stream {
+        Stream {
+            name: name,
+            channel: channel
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Connection {
     pub sender: Sender,
     pub identifiers: String,
     channels: HashSet<String>,
+    streams: HashSet<Stream>
 }
 
 impl Connection {
@@ -18,7 +36,8 @@ impl Connection {
         Connection {
             sender: sender,
             identifiers: identifiers,
-            channels: HashSet::new()
+            channels: HashSet::new(),
+            streams: HashSet::new(),
         }
     }
 
@@ -47,8 +66,23 @@ impl Connection {
     pub fn add_channel(&mut self, channel: String) {
         self.channels.insert(channel);
     }
+
+    pub fn add_stream(&mut self, stream_name: String, channel: String) {
+        let stream = Stream::new(stream_name, channel);
+        self.streams.insert(stream);
+    }
+
+    pub fn remove_stream(&mut self, stream_name: String, channel: String) {
+        let stream = Stream::new(stream_name, channel);
+        self.streams.remove(&stream);
+    }
+
+    pub fn get_streams(&self) -> &HashSet<Stream> {
+        &self.streams
+    }
 }
 
+#[derive(Debug)]
 pub struct Connections {
     inner: HashMap<SocketAddr, Connection>
 }
@@ -92,5 +126,17 @@ impl Connections {
 
     pub fn get_conn_channels_vec(&self, addr: &SocketAddr) -> Vec<String> {
         self.inner.get(addr).unwrap().get_channels_vec()
+    }
+
+    pub fn add_stream_to_conn(&mut self, addr: &SocketAddr, stream: String, channel: String) {
+        self.inner.get_mut(addr).unwrap().add_stream(stream, channel);
+    }
+
+    pub fn remove_conn_stream(&mut self, addr: &SocketAddr, stream: String, channel: String) {
+        self.inner.get_mut(addr).unwrap().remove_stream(stream, channel);
+    }
+
+    pub fn get_conn_streams(&self, addr: &SocketAddr) -> &HashSet<Stream> {
+        self.inner.get(addr).unwrap().get_streams()
     }
 }
