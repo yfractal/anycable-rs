@@ -1,4 +1,6 @@
 pub mod connections;
+pub mod streams;
+
 use connections::Connection;
 
 use std::collections::{HashMap, HashSet};
@@ -37,70 +39,11 @@ use tokio::prelude::*;
 
 type Sender = mpsc::UnboundedSender<Message>;
 
-#[derive(PartialEq, Eq, Hash, Debug)]
-struct Subscriber {
-    addr: SocketAddr,
-    channel: String
-}
-
-impl Subscriber {
-    pub fn new(addr: SocketAddr, channel: String) -> Subscriber {
-        Subscriber{
-            addr: addr,
-            channel: channel
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Streams {
-    streams: HashMap<String, HashSet<Subscriber>>
-}
-
-impl Streams {
-    pub fn new() -> Streams {
-        Streams{
-            streams: HashMap::new()
-        }
-    }
-
-    pub fn get(&self, stream: &str) -> &HashSet<Subscriber> {
-        self.streams.get(stream).unwrap()
-    }
-
-    pub fn remove(&mut self, stream: &str, addr: SocketAddr, channel: String) -> bool{
-        let subscriber = Subscriber::new(addr, channel);
-        match self.streams.get_mut(stream) {
-            Some(subscribers) => {
-                subscribers.remove(&subscriber);
-                true
-            },
-            None => {
-                false
-            }
-        }
-    }
-
-    pub fn put(&mut self, stream: &str, addr: SocketAddr, channel: String) {
-        let subscriber = Subscriber::new(addr, channel);
-        match self.streams.get_mut(stream) {
-            Some(subscribers) => {
-                subscribers.insert(subscriber);
-            },
-            None => {
-                let mut subscribers = HashSet::new();
-                subscribers.insert(subscriber);
-                self.streams.insert(stream.to_string(), subscribers);
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 struct RedisConsumer {
     connections: Arc<Mutex<connections::Connections>>,
     msg_queue: mpsc::UnboundedReceiver<String>,
-    streams: Arc<Mutex<Streams>>,
+    streams: Arc<Mutex<streams::Streams>>,
 }
 
 impl Future for RedisConsumer {
@@ -118,14 +61,14 @@ impl Future for RedisConsumer {
                     let raw_data = &v["data"];
                     let data: Value = serde_json::from_str(&raw_data.as_str().unwrap().to_string()).unwrap();
 
-                    for sub in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
+                    for stream in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
                         let connections = self.connections.lock().unwrap();
                         let msg = json!({
-                            "identifier": sub.channel,
+                            "identifier": stream.channel,
                             "message": data
                         });
 
-                        connections.send_msg_to_connection(&sub.addr, msg.to_string());
+                        connections.send_msg_to_connection(&stream.addr, msg.to_string());
                     }
 
                     if i + 1 == TICK {
@@ -196,7 +139,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     println!("Listening on: {}", addr);
 
     let connections = Arc::new(Mutex::new(connections::Connections::new()));
-    let streams = Arc::new(Mutex::new(Streams::new()));
+    let streams = Arc::new(Mutex::new(streams::Streams::new()));
+
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
 
     let rerdis_consumer = RedisConsumer{
@@ -213,8 +157,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
         println!("Peer address: {}", addr);
 
         let connections_inner = connections.clone();
+
         let streams_inner = streams.clone();
         let streams_inner2 = streams.clone();
+
         let addr_to_header_inner = addr_to_header.clone();
 
         let client_inner = client.clone();
@@ -291,8 +237,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                     }
 
                                     for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
-                                        streams_inner.lock().unwrap().remove(&stream.name, addr, stream.channel.to_string());
-                                        connections.lock().unwrap().remove_conn_stream(&addr, stream.name.to_string(), channel.as_str().unwrap().to_string());
+                                        streams_inner.lock().unwrap().
+                                            remove_stream(&stream.name, addr, stream.channel.to_string());
+                                        connections.lock().unwrap().
+                                            remove_conn_stream(&addr, stream.name.to_string(), channel.as_str().unwrap().to_string());
                                     }
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
@@ -309,7 +257,9 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                     }
 
                                     for stream in reply.get_streams().iter() {
-                                        streams_inner.lock().unwrap().put(stream, addr, channel.as_str().unwrap().to_string());
+                                        streams_inner.lock().unwrap().
+                                            put_stream(stream, addr, channel.to_string());
+
                                         connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
                                     }
                                 }
@@ -334,7 +284,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                            connections_inner.lock().unwrap().get_conn_channels_vec(&addr));
 
                             for stream in connections_inner.lock().unwrap().get_conn_streams(&addr).iter() {
-                                streams_inner2.lock().unwrap().remove(&stream.name, addr, stream.channel.to_string());
+                                streams_inner2.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
                             }
                             connections_inner.lock().unwrap().remove_connection(&addr);
 

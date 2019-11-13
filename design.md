@@ -30,16 +30,14 @@
    1. create
    2. delete
    3. find
-   4. find connection's channels
-   5. add channel to connection
-   6. delete channel from channel
-2. channel
+   4. find connection's streams
+   5. add stream to connection
+   6. delete stream from connection
+2. streams
+   stream: addr, channel pair
    1. create
    2. delete
-   3. add connection to channel
-   4. delete connection from channel
-   3. find connections
-
+   3. find streams
 ## The message protocal
 
 ## module
