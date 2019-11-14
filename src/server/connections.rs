@@ -61,35 +61,40 @@ impl Connection {
 
 #[derive(Debug)]
 pub struct Connections {
-    inner: HashMap<SocketAddr, Connection>
+    inner: HashMap<SocketAddr, Connection>,
+    addrs: HashSet<SocketAddr>,
 }
 
 impl Connections {
     pub fn new() -> Connections {
         Connections {
             inner: HashMap::new(),
+            addrs: HashSet::new(),
         }
     }
 
-    pub fn create_connection(&mut self, addr: SocketAddr, sender: Sender, identifiers: String) {
-        let connection = Connection::new(sender, identifiers);
+    pub fn add_conn(&mut self, addr: SocketAddr, connection: Connection) {
         self.inner.insert(addr, connection);
+        self.addrs.insert(addr);
     }
 
-    pub fn add_connection(&mut self, addr: SocketAddr, connection: Connection) {
-        self.inner.insert(addr, connection);
-    }
-
-    pub fn remove_connection(&mut self, addr: &SocketAddr) {
+    pub fn remove_conn(&mut self, addr: &SocketAddr) {
         self.inner.remove(addr);
+        self.addrs.remove(addr);
     }
 
-    pub fn get_connection_identifiers(&self, addr: &SocketAddr) -> String {
+    pub fn get_conn_identifiers(&self, addr: &SocketAddr) -> String {
         self.inner.get(addr).unwrap().identifiers.clone()
     }
 
-    pub fn send_msg_to_connection(&self, addr: &SocketAddr, msg: String) {
+    pub fn send_msg_to_conn(&self, addr: &SocketAddr, msg: String) {
         self.inner.get(addr).unwrap().send_msg(msg);
+    }
+
+    pub fn broadcast(&self, msg: String) {
+        for addr in self.addrs.iter() {
+            self.send_msg_to_conn(addr, msg.to_string());
+        }
     }
 
     pub fn add_stream_to_conn(&mut self, addr: &SocketAddr, stream: String, channel: String) {

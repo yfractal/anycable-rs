@@ -23,10 +23,12 @@ use futures::stream::Stream;
 use futures::sync::mpsc;
 
 use tokio::net::TcpListener;
-use tungstenite::protocol::Message;
+use tokio::timer::Interval;
 
+use tungstenite::protocol::Message;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::accept_async;
+
 use std::net::SocketAddr;
 
 use tungstenite::handshake::server::{ErrorResponse, Request};
@@ -34,6 +36,8 @@ use tungstenite::http::StatusCode;
 
 use serde_json::{Result, Value};
 use serde_json::json;
+
+use std::time::Duration;
 
 use tokio::prelude::*;
 
@@ -68,7 +72,7 @@ impl Future for RedisConsumer {
                             "message": data
                         });
 
-                        connections.send_msg_to_connection(&stream.addr, msg.to_string());
+                        connections.send_msg_to_conn(&stream.addr, msg.to_string());
                     }
 
                     if i + 1 == TICK {
@@ -197,10 +201,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                         let (tx, rx) = futures::sync::mpsc::unbounded();
 
                         let connection = self::connections::Connection::new(tx, reply.get_identifiers().to_string());
-                        connections_inner.lock().unwrap().add_connection(addr, connection);
+                        connections_inner.lock().unwrap().add_conn(addr, connection);
 
                         for t in reply.get_transmissions().iter() {
-                            connections_inner.lock().unwrap().send_msg_to_connection(&addr, t.to_string());
+                            connections_inner.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                         }
 
                         let (sink, stream) = ws_stream.split();
@@ -215,25 +219,25 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                                 if command == "subscribe" {
                                     let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_connection_identifiers(&addr);
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_subscribe(client_inner2.clone(),
                                                               identifiers.to_string(),
                                                               channel.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_connection(&addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
                                 } else if command == "unsubscribe" {
                                     let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_connection_identifiers(&addr);
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_unsubscribe(client_inner2.clone(),
                                                                 identifiers.to_string(),
                                                                 channel.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_connection(&addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
 
                                     for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
@@ -245,7 +249,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
                                     let data = &v["data"];
-                                    let identifiers = connections.lock().unwrap().get_connection_identifiers(&addr);
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_message(client_inner2.clone(),
                                                             identifiers.to_string(),
@@ -253,7 +257,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                                             data.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_connection(&addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
 
                                     for stream in reply.get_streams().iter() {
@@ -280,13 +284,13 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                         tokio::spawn(connection.then(move |_| {
                             rpc_disconnect(client_inner3,
-                                           connections_inner.lock().unwrap().get_connection_identifiers(&addr),
+                                           connections_inner.lock().unwrap().get_conn_identifiers(&addr),
                                            connections_inner.lock().unwrap().get_conn_channels_vec(&addr));
 
                             for stream in connections_inner.lock().unwrap().get_conn_streams(&addr).iter() {
                                 streams_inner2.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
                             }
-                            connections_inner.lock().unwrap().remove_connection(&addr);
+                            connections_inner.lock().unwrap().remove_conn(&addr);
 
                             println!("Connection {} closed.", addr);
                             Ok(())
@@ -305,9 +309,18 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
             });
 
         tokio::spawn(f);
+
+
         // always return ok
         Ok(())
     }).map_err(|_e| ());
+
+    let i = Interval::new_interval(Duration::from_millis(1000))
+        .for_each(|_| {
+            println!("Hello world!");
+            Ok(())
+        }).map_err(|e| ());
+    tokio::spawn(i);
 
     tokio::spawn(srv)
 }
