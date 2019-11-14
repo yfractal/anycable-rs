@@ -38,6 +38,8 @@ use serde_json::{Result, Value};
 use serde_json::json;
 
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 
 use tokio::prelude::*;
 
@@ -143,6 +145,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     println!("Listening on: {}", addr);
 
     let connections = Arc::new(Mutex::new(connections::Connections::new()));
+    let connections_inner = connections.clone();
     let streams = Arc::new(Mutex::new(streams::Streams::new()));
 
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
@@ -267,6 +270,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
                                     }
                                 }
+                            } else {
+                                println!("empty data");
                             }
 
                             Ok(())
@@ -315,12 +320,19 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
         Ok(())
     }).map_err(|_e| ());
 
-    let i = Interval::new_interval(Duration::from_millis(1000))
-        .for_each(|_| {
-            println!("Hello world!");
+    let ping_interval = Interval::new_interval(Duration::from_millis(3000))
+        .for_each(move |_| {
+            let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let msg = json!({
+                "type": "ping",
+                "message": since.as_secs(),
+            });
+            connections_inner.lock().unwrap().broadcast(msg.to_string());
+
             Ok(())
         }).map_err(|e| ());
-    tokio::spawn(i);
+
+    tokio::spawn(ping_interval);
 
     tokio::spawn(srv)
 }
