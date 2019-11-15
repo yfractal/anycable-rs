@@ -288,9 +288,9 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                             .select(ws_writer.map(|_| ()).map_err(|_| ()));
 
                         tokio::spawn(connection.then(move |_| {
-                            rpc_disconnect(client_inner3,
-                                           connections_inner.lock().unwrap().get_conn_identifiers(&addr),
-                                           connections_inner.lock().unwrap().get_conn_channels_vec(&addr));
+                            let identifiers = connections_inner.lock().unwrap().get_conn_identifiers(&addr);
+                            let channels = connections_inner.lock().unwrap().get_conn_channels_vec(&addr);
+                            rpc_disconnect(client_inner3, identifiers, channels);
 
                             for stream in connections_inner.lock().unwrap().get_conn_streams(&addr).iter() {
                                 streams_inner2.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
