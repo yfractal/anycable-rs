@@ -1,3 +1,8 @@
+pub mod connections;
+pub mod streams;
+
+use connections::Connection;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{Error, ErrorKind};
@@ -18,10 +23,12 @@ use futures::stream::Stream;
 use futures::sync::mpsc;
 
 use tokio::net::TcpListener;
-use tungstenite::protocol::Message;
+use tokio::timer::Interval;
 
+use tungstenite::protocol::Message;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::accept_async;
+
 use std::net::SocketAddr;
 
 use tungstenite::handshake::server::{ErrorResponse, Request};
@@ -30,208 +37,19 @@ use tungstenite::http::StatusCode;
 use serde_json::{Result, Value};
 use serde_json::json;
 
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+
 use tokio::prelude::*;
 
 type Sender = mpsc::UnboundedSender<Message>;
 
-struct Connection {
-    sender: Sender,
-    identifiers: String
-}
-
-impl Connection {
-    pub fn new(sender: Sender, identifiers: String) -> Connection {
-        Connection {
-            sender: sender,
-            identifiers: identifiers
-        }
-    }
-
-    pub fn send_msg(&self, msg: String) {
-        let msg = Message::Text(msg.into());
-        self.sender.unbounded_send(msg).unwrap();
-    }
-}
-
-
-#[derive(PartialEq, Eq, Hash, Debug)]
-struct Subscriber {
-    addr: SocketAddr,
-    channel: String
-}
-
-impl Subscriber {
-    pub fn new(addr: SocketAddr, channel: String) -> Subscriber {
-        Subscriber{
-            addr: addr,
-            channel: channel
-        }
-    }
-}
-
 #[derive(Debug)]
-struct Streams {
-    streams: HashMap<String, HashSet<Subscriber>>
-}
-
-impl Streams {
-    pub fn new() -> Streams {
-        Streams{
-            streams: HashMap::new()
-        }
-    }
-
-    pub fn get(&self, stream: &str) -> &HashSet<Subscriber> {
-        self.streams.get(stream).unwrap()
-    }
-
-    pub fn remove(&mut self, stream: &str, addr: SocketAddr, channel: String) -> bool{
-        let subscriber = Subscriber::new(addr, channel);
-        match self.streams.get_mut(stream) {
-            Some(subscribers) => {
-                subscribers.remove(&subscriber);
-                true
-            },
-            None => {
-                false
-            }
-        }
-    }
-
-    pub fn put(&mut self, stream: &str, addr: SocketAddr, channel: String) {
-        let subscriber = Subscriber::new(addr, channel);
-        match self.streams.get_mut(stream) {
-            Some(subscribers) => {
-                subscribers.insert(subscriber);
-            },
-            None => {
-                let mut subscribers = HashSet::new();
-                subscribers.insert(subscriber);
-                self.streams.insert(stream.to_string(), subscribers);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Subscribers {
-    inner: HashMap<Subscriber, HashSet<String>>
-}
-
-impl Subscribers {
-    pub fn new() -> Subscribers {
-        Subscribers {
-            inner: HashMap::new()
-        }
-    }
-
-    pub fn get(&self, addr: SocketAddr, channel: String) -> &HashSet<String> {
-        let subscriber = Subscriber::new(addr, channel);
-        self.inner.get(&subscriber).unwrap()
-    }
-
-    pub fn remove_subscriber(&mut self, addr: SocketAddr, channel: String) {
-        let subscriber = Subscriber::new(addr, channel);
-        self.inner.remove(&subscriber);
-    }
-
-    pub fn put(&mut self, addr: SocketAddr, channel: String, stream: &str) {
-        let subscriber = Subscriber::new(addr, channel);
-        match self.inner.get_mut(&subscriber) {
-            Some(streams) => {
-                streams.insert(stream.to_string());
-            },
-            None => {
-                let mut streams = HashSet::new();
-                streams.insert(stream.to_string());
-                self.inner.insert(subscriber, streams);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct AddrToChanels {
-    inner: HashMap<SocketAddr, HashSet<String>>
-}
-
-impl AddrToChanels {
-    pub fn new() -> AddrToChanels {
-        AddrToChanels {
-            inner: HashMap::new()
-        }
-    }
-
-    pub fn get(&self, addr: SocketAddr) -> &HashSet<String> {
-        self.inner.get(&addr).unwrap()
-    }
-
-    pub fn get_vec(&self, addr: SocketAddr) -> Vec<String> {
-        let mut channels = Vec::new();
-        for c in self.get(addr).iter() {
-            channels.push(c.to_string());
-        }
-
-        channels
-    }
-
-    pub fn remove_addr(&mut self, addr: SocketAddr) {
-        self.inner.remove(&addr);
-    }
-
-    pub fn remove_channel(&mut self, addr: SocketAddr, channel: String) -> bool {
-        match self.inner.get_mut(&addr) {
-            Some(channels) => {
-                channels.remove(&channel);
-                true
-            },
-            None => {
-                false
-            }
-        }
-    }
-
-    pub fn put(&mut self, addr: SocketAddr, channel: String) {
-        match self.inner.get_mut(&addr) {
-            Some(channels) => {
-                channels.insert(channel);
-            },
-            None => {
-                let mut channels = HashSet::new();
-                channels.insert(channel);
-                self.inner.insert(addr, channels);
-            }
-        }
-    }
-}
-
-struct WsServer {
-    connections: Arc<Mutex<HashMap<SocketAddr, Connection>>>,
-}
-
-impl WsServer {
-    pub fn broadcast(&mut self) {
-        let msg = Message::Text("Hello WebSocket".into());
-        let mut connections = self.connections.lock().unwrap();
-        let iter = connections
-            .iter_mut()
-            .filter(|&(&k, _)| true)
-            .map(|(_, v)| v);
-        for v in iter {
-            v.sender.unbounded_send(msg.clone()).unwrap();
-        }
-    }
-
-    pub fn send_message(&self, addr: SocketAddr, msg: String) {
-        let connections = self.connections.lock().unwrap();
-        connections.get(&addr).unwrap().send_msg(msg);
-    }
-}
-
 struct RedisConsumer {
-    connections: Arc<Mutex<HashMap<SocketAddr, Connection>>>,
+    connections: Arc<Mutex<connections::Connections>>,
     msg_queue: mpsc::UnboundedReceiver<String>,
-    streams: Arc<Mutex<Streams>>,
+    streams: Arc<Mutex<streams::Streams>>,
 }
 
 impl Future for RedisConsumer {
@@ -247,16 +65,14 @@ impl Future for RedisConsumer {
                     let v: Value = serde_json::from_str(&v).unwrap();
                     let stream = &v["stream"];
                     let raw_data = &v["data"];
-                    let data: Value = serde_json::from_str(&raw_data.as_str().unwrap().to_string()).unwrap();
-
-                    for sub in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
-                        let connections = self.connections.lock().unwrap();
+                    let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
+                    for stream in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
                         let msg = json!({
-                            "identifier": sub.channel,
+                            "identifier": stream.channel,
                             "message": data
                         });
-
-                        connections.get(&sub.addr).unwrap().send_msg(msg.to_string());
+                        self.connections.lock().unwrap().
+                            send_msg_to_conn(&stream.addr, msg.to_string());
                     }
 
                     if i + 1 == TICK {
@@ -326,14 +142,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     let socket = TcpListener::bind(&addr).unwrap();
     println!("Listening on: {}", addr);
 
-    let connections = Arc::new(Mutex::new(HashMap::new()));
-    let streams = Arc::new(Mutex::new(Streams::new()));
-    let subscribers = Arc::new(Mutex::new(Subscribers::new()));
-    let addr_to_channels = Arc::new(Mutex::new(AddrToChanels::new()));
+    let connections = Arc::new(Mutex::new(connections::Connections::new()));
+    let connections_inner = connections.clone();
+    let streams = Arc::new(Mutex::new(streams::Streams::new()));
 
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
-
-    let ws_server = Arc::new(Mutex::new(WsServer{connections: connections.clone()}));
 
     let rerdis_consumer = RedisConsumer{
         connections: connections.clone(),
@@ -349,15 +162,12 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
         println!("Peer address: {}", addr);
 
         let connections_inner = connections.clone();
+
         let streams_inner = streams.clone();
         let streams_inner2 = streams.clone();
-        let subscribers_inner = subscribers.clone();
-        let subscribers_inner2 = subscribers.clone();
-        let addr_to_channels_inner = addr_to_channels.clone();
-        let addr_to_channels_inner2 = addr_to_channels.clone();
+
         let addr_to_header_inner = addr_to_header.clone();
 
-        let ws_server_inner = ws_server.clone();
         let client_inner = client.clone();
 
         let callback = move |req: &Request| {
@@ -391,12 +201,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                     Status::SUCCESS => {
                         let (tx, rx) = futures::sync::mpsc::unbounded();
 
-                        let connection = Connection::new(tx, reply.get_identifiers().to_string());
-
-                        connections_inner.lock().unwrap().insert(addr, connection);
+                        let connection = self::connections::Connection::new(tx, reply.get_identifiers().to_string());
+                        connections_inner.lock().unwrap().add_conn(addr, connection);
 
                         for t in reply.get_transmissions().iter() {
-                            ws_server_inner.lock().unwrap().send_message(addr, t.to_string());
+                            connections_inner.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                         }
 
                         let (sink, stream) = ws_stream.split();
@@ -411,37 +220,37 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                                 if command == "subscribe" {
                                     let channel = &v["identifier"];
-                                    let identifiers = &connections.lock().unwrap().get(&addr).unwrap().identifiers.clone();
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_subscribe(client_inner2.clone(),
                                                               identifiers.to_string(),
                                                               channel.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        ws_server_inner.lock().unwrap().send_message(addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
                                 } else if command == "unsubscribe" {
                                     let channel = &v["identifier"];
-                                    let identifiers = &connections.lock().unwrap().get(&addr).unwrap().identifiers.clone();
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_unsubscribe(client_inner2.clone(),
                                                                 identifiers.to_string(),
                                                                 channel.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        ws_server_inner.lock().unwrap().send_message(addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
 
-                                    for stream in subscribers_inner.lock().unwrap().get(addr, channel.as_str().unwrap().to_string()).iter() {
-                                        streams_inner.lock().unwrap().remove(stream, addr, channel.as_str().unwrap().to_string());
+                                    for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
+                                        streams_inner.lock().unwrap().
+                                            remove_stream(&stream.name, addr, stream.channel.to_string());
+                                        connections.lock().unwrap().
+                                            remove_conn_stream(&addr, stream.name.to_string(), channel.as_str().unwrap().to_string());
                                     }
-
-                                    subscribers_inner.lock().unwrap().remove_subscriber(addr, channel.as_str().unwrap().to_string());
-                                    addr_to_channels_inner.lock().unwrap().remove_channel(addr, channel.as_str().unwrap().to_string());
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
                                     let data = &v["data"];
-                                    let identifiers = &connections.lock().unwrap().get(&addr).unwrap().identifiers.clone();
+                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
                                     let reply = rpc_message(client_inner2.clone(),
                                                             identifiers.to_string(),
@@ -449,16 +258,18 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                                             data.as_str().unwrap().to_string());
 
                                     for t in reply.get_transmissions().iter() {
-                                        ws_server_inner.lock().unwrap().send_message(addr, t.to_string());
+                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                                     }
 
                                     for stream in reply.get_streams().iter() {
-                                        streams_inner.lock().unwrap().put(stream, addr, channel.as_str().unwrap().to_string());
-                                        subscribers_inner.lock().unwrap().put(addr, channel.as_str().unwrap().to_string(), stream);
-                                    }
+                                        streams_inner.lock().unwrap().
+                                            put_stream(stream, addr, channel.as_str().unwrap().to_string());
 
-                                    addr_to_channels_inner.lock().unwrap().put(addr, channel.as_str().unwrap().to_string());
+                                        connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
+                                    }
                                 }
+                            } else {
+                                println!("empty data");
                             }
 
                             Ok(())
@@ -475,23 +286,15 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                             .select(ws_writer.map(|_| ()).map_err(|_| ()));
 
                         tokio::spawn(connection.then(move |_| {
-                            rpc_disconnect(client_inner3,
-                                           connections_inner.lock().unwrap().get(&addr).unwrap().identifiers.to_string(),
-                                           addr_to_channels_inner2.lock().unwrap().get_vec(addr));
+                            let identifiers = connections_inner.lock().unwrap().get_conn_identifiers(&addr);
+                            let channels = connections_inner.lock().unwrap().get_conn_channels_vec(&addr);
+                            rpc_disconnect(client_inner3, identifiers, channels);
 
-                            connections_inner.lock().unwrap().remove(&addr);
-
-                            let channels = addr_to_channels_inner2.lock().unwrap().get_vec(addr);
-
-                            for channel in channels.iter() {
-                                for stream in subscribers_inner2.lock().unwrap().get(addr, channel.to_string()).iter() {
-                                    streams_inner2.lock().unwrap().remove(stream, addr, channel.to_string());
-                                }
-
-                                subscribers_inner2.lock().unwrap().remove_subscriber(addr, channel.to_string());
+                            for stream in connections_inner.lock().unwrap().get_conn_streams(&addr).iter() {
+                                streams_inner2.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
                             }
+                            connections_inner.lock().unwrap().remove_conn(&addr);
 
-                            addr_to_channels_inner2.lock().unwrap().remove_addr(addr);
                             println!("Connection {} closed.", addr);
                             Ok(())
                         }));
@@ -509,9 +312,24 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
             });
 
         tokio::spawn(f);
+
         // always return ok
         Ok(())
     }).map_err(|_e| ());
+
+    let ping_interval = Interval::new_interval(Duration::from_millis(3000))
+        .for_each(move |_| {
+            let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let msg = json!({
+                "type": "ping",
+                "message": since.as_secs(),
+            });
+            connections_inner.lock().unwrap().broadcast(msg.to_string());
+
+            Ok(())
+        }).map_err(|e| ());
+
+    tokio::spawn(ping_interval);
 
     tokio::spawn(srv)
 }
