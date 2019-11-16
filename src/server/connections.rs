@@ -88,7 +88,10 @@ impl Connections {
     }
 
     pub fn send_msg_to_conn(&self, addr: &SocketAddr, msg: String) {
-        self.inner.get(addr).unwrap().send_msg(msg);
+        match self.inner.get(addr) {
+            Some(addr) => addr.send_msg(msg),
+            _ => (),
+        };
     }
 
     pub fn broadcast(&self, msg: String) {
