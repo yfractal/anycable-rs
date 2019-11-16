@@ -35,6 +35,7 @@ fn do_sub(tx: mpsc::UnboundedSender<String>) -> () {
         let msg = pubsub.get_message().unwrap();
         let payload : String = msg.get_payload().unwrap();
 
+        // TODO: consume here directly, no need send to queue
         tx.unbounded_send(payload).unwrap();
     }
 }

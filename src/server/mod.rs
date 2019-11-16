@@ -65,16 +65,14 @@ impl Future for RedisConsumer {
                     let v: Value = serde_json::from_str(&v).unwrap();
                     let stream = &v["stream"];
                     let raw_data = &v["data"];
-                    let data: Value = serde_json::from_str(&raw_data.as_str().unwrap().to_string()).unwrap();
-
+                    let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
                     for stream in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
-                        let connections = self.connections.lock().unwrap();
                         let msg = json!({
                             "identifier": stream.channel,
                             "message": data
                         });
-
-                        connections.send_msg_to_conn(&stream.addr, msg.to_string());
+                        self.connections.lock().unwrap().
+                            send_msg_to_conn(&stream.addr, msg.to_string());
                     }
 
                     if i + 1 == TICK {
@@ -265,7 +263,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                                     for stream in reply.get_streams().iter() {
                                         streams_inner.lock().unwrap().
-                                            put_stream(stream, addr, channel.to_string());
+                                            put_stream(stream, addr, channel.as_str().unwrap().to_string());
 
                                         connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
                                     }
@@ -314,7 +312,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
             });
 
         tokio::spawn(f);
-
 
         // always return ok
         Ok(())
