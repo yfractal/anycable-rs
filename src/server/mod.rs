@@ -85,6 +85,28 @@ impl Future for RedisConsumer {
     }
 }
 
+fn stop_channel_streams(connections: Arc<Mutex<Connections>>,
+                        streams: Arc<Mutex<Streams>>,
+                        addr: SocketAddr,
+                        channel: &str) {
+    connections.lock().unwrap().stop_streams(streams.clone(), addr, &channel);
+}
+
+fn start_channel_streams(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    addr: SocketAddr,
+    channel: String,
+    respone: CommandResponse) {
+
+    for stream in respone.get_streams().iter() {
+        streams.lock().unwrap().
+            put_stream(stream, addr, channel.to_string());
+
+        connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.to_string());
+    }
+}
+
 fn handle_rpc_command_resp(
     connections: Arc<Mutex<Connections>>,
     streams: Arc<Mutex<Streams>>,
@@ -98,16 +120,15 @@ fn handle_rpc_command_resp(
     }
 
     if respone.get_stop_streams() {
-        connections.lock().unwrap().stop_streams(streams.clone(), addr, &channel);
+        // follow erlycable implemention, hope it's not a bug, more info as below:
+        // https://github.com/anycable/erlycable/blob/master/src/erlycable_server.erl#L242-L244
+        stop_channel_streams(connections.clone(), streams.clone(), addr, &channel);
+        start_channel_streams(connections, streams, addr, channel, respone);
     } else {
-        for stream in respone.get_streams().iter() {
-            streams.lock().unwrap().
-                put_stream(stream, addr, channel.to_string());
-
-            connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.to_string());
-        }
+        start_channel_streams(connections, streams, addr, channel, respone);
     }
 }
+
 
 pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio::executor::Spawn {
     let rpc_client = Arc::new(Mutex::new(rpc::Client::new("localhost:50051")));
@@ -203,9 +224,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         subscribe(identifiers.to_string(),
                                                   channel.as_str().unwrap().to_string());
 
-                                    for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
-                                    }
+                                    handle_rpc_command_resp(connections.clone(),
+                                                            streams_inner.clone(),
+                                                            addr, channel.as_str().unwrap().to_string(),
+                                                            reply);
                                 } else if command == "unsubscribe" {
                                     let channel = &v["identifier"];
                                     let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
@@ -228,16 +250,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                                 channel.as_str().unwrap().to_string(),
                                                 data.as_str().unwrap().to_string());
 
-                                    for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
-                                    }
-
-                                    for stream in reply.get_streams().iter() {
-                                        streams_inner.lock().unwrap().
-                                            put_stream(stream, addr, channel.as_str().unwrap().to_string());
-
-                                        connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.as_str().unwrap().to_string());
-                                    }
+                                    handle_rpc_command_resp(connections.clone(),
+                                                            streams_inner.clone(),
+                                                            addr, channel.as_str().unwrap().to_string(),
+                                                            reply);
                                 }
                             } else {
                                 println!("empty data");
