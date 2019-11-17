@@ -1,9 +1,13 @@
+use super::Streams;
+
 use futures::sync::mpsc;
 
 use std::collections::{HashMap, HashSet};
 
 use std::net::SocketAddr;
 use tungstenite::protocol::Message;
+
+use std::sync::{Arc, Mutex};
 
 type Sender = mpsc::UnboundedSender<Message>;
 
@@ -110,6 +114,24 @@ impl Connections {
 
     pub fn get_conn_streams(&self, addr: &SocketAddr) -> &HashSet<Stream> {
         self.inner.get(addr).unwrap().get_streams()
+    }
+
+    pub fn stop_streams(&mut self, strems: Arc<Mutex<Streams>>, addr: SocketAddr, channel: &str) {
+        let mut streams_to_delete = Vec::new();
+        for stream in self.inner.get(&addr).unwrap().get_streams() {
+            strems.lock().unwrap().
+                remove_stream(&stream.name, addr, stream.channel.to_string());
+            println!("stream loop {:?}", stream);
+            if (stream.channel == channel) {
+                let stream = Stream::new(stream.name.to_string(), channel.to_string());
+                streams_to_delete.push(stream);
+            }
+        }
+
+        for stream in streams_to_delete.iter() {
+            println!("delete stream {:?}", stream);
+            self.inner.get_mut(&addr).unwrap().remove_stream(stream.name.to_string(), stream.channel.to_string());
+        }
     }
 
     pub fn get_conn_channels_vec(&self, addr: &SocketAddr) -> Vec<String> {
