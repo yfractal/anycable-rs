@@ -33,11 +33,14 @@
    4. find connection's streams
    5. add stream to connection
    6. delete stream from connection
-2. streams
-   stream: addr, channel pair
+2. connections.stream
+   name, channel pair
+3. streams
    1. create
    2. delete
    3. find streams
+4. streams.stream
+   addr, channel pair
 ## The message protocal
 
 ## module

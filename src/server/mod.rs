@@ -1,15 +1,19 @@
-pub mod connections;
 pub mod streams;
+
+pub mod connections;
+
 mod rpc;
 
 use connections::Connection;
+use connections::Connections;
+use streams::Streams;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 
-use protos::anycable::Status;
+use protos::anycable::{Status, CommandResponse};
 
 use futures::Future;
 use futures::Sink;
@@ -78,6 +82,30 @@ impl Future for RedisConsumer {
         }
 
         Ok(Async::NotReady)
+    }
+}
+
+fn handle_rpc_command_resp(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    addr: SocketAddr,
+    channel: String,
+    respone: CommandResponse) {
+
+    for t in respone.get_transmissions().iter() {
+        connections.lock().unwrap().
+            send_msg_to_conn(&addr, t.to_string());
+    }
+
+    if respone.get_stop_streams() {
+        connections.lock().unwrap().stop_streams(streams.clone(), addr, &channel);
+    } else {
+        for stream in respone.get_streams().iter() {
+            streams.lock().unwrap().
+                put_stream(stream, addr, channel.to_string());
+
+            connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.to_string());
+        }
     }
 }
 
@@ -186,16 +214,10 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                                         unsubscribe(identifiers.to_string(),
                                                     channel.as_str().unwrap().to_string());
 
-                                    for t in reply.get_transmissions().iter() {
-                                        connections.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
-                                    }
-
-                                    for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
-                                        streams_inner.lock().unwrap().
-                                            remove_stream(&stream.name, addr, stream.channel.to_string());
-                                        connections.lock().unwrap().
-                                            remove_conn_stream(&addr, stream.name.to_string(), channel.as_str().unwrap().to_string());
-                                    }
+                                    handle_rpc_command_resp(connections.clone(),
+                                                            streams_inner.clone(),
+                                                            addr, channel.as_str().unwrap().to_string(),
+                                                            reply);
                                 } else if command == "message" {
                                     let channel = &v["identifier"];
                                     let data = &v["data"];
