@@ -119,6 +119,11 @@ fn handle_rpc_command_resp(
             send_msg_to_conn(&addr, t.to_string());
     }
 
+    if respone.get_disconnect() {
+        connections.lock().unwrap().send_msg_to_conn(&addr, "disconnect!".to_string());
+
+        return ();
+    }
     if respone.get_stop_streams() {
         // follow erlycable implemention, hope it's not a bug, more info as below:
         // https://github.com/anycable/erlycable/blob/master/src/erlycable_server.erl#L242-L244
@@ -127,6 +132,24 @@ fn handle_rpc_command_resp(
     } else {
         start_channel_streams(connections, streams, addr, channel, respone);
     }
+}
+
+fn close_connection(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    addr: SocketAddr,
+    rpc_client: Arc<Mutex<rpc::Client>>) {
+
+    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
+    let channels = connections.lock().unwrap().get_conn_channels_vec(&addr);
+    let reply = rpc_client.lock().unwrap().disconnect(identifiers, channels);
+
+    for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
+        streams.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
+    }
+
+    connections.lock().unwrap().remove_conn(&addr);
+    println!("Connection {} closed.", addr);
 }
 
 
@@ -206,7 +229,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                             connections_inner.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
                         }
 
-                        let (sink, stream) = ws_stream.split();
+                        let (mut sink, stream) = ws_stream.split();
 
                         let connections = connections_inner.clone();
 
@@ -263,7 +286,12 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                         });
 
                         let ws_writer = rx.fold(sink, |mut sink, msg| {
-                            sink.start_send(msg).unwrap();
+                            if msg.to_text().unwrap() == "disconnect!" {
+                                sink.close();
+                            } else {
+                                sink.start_send(msg).unwrap();
+                            }
+
                             Ok(sink)
                         });
 
@@ -273,16 +301,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                             .select(ws_writer.map(|_| ()).map_err(|_| ()));
 
                         tokio::spawn(connection.then(move |_| {
-                            let identifiers = connections_inner.lock().unwrap().get_conn_identifiers(&addr);
-                            let channels = connections_inner.lock().unwrap().get_conn_channels_vec(&addr);
-                            let reply = rpc_client.lock().unwrap().disconnect(identifiers, channels);
+                            close_connection(connections_inner.clone(),
+                                             streams_inner2.clone(),
+                                             addr,
+                                             rpc_client.clone());
 
-                            for stream in connections_inner.lock().unwrap().get_conn_streams(&addr).iter() {
-                                streams_inner2.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
-                            }
-                            connections_inner.lock().unwrap().remove_conn(&addr);
-
-                            println!("Connection {} closed.", addr);
                             Ok(())
                         }));
                     },
