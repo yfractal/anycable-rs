@@ -133,6 +133,39 @@ fn handle_rpc_command_resp(
         start_channel_streams(connections, streams, addr, channel, respone);
     }
 }
+fn handle_user_command(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    rpc_client: Arc<Mutex<rpc::Client>>,
+    addr: SocketAddr,
+    data: &str) {
+    if data != "" {
+        let v: Value = serde_json::from_str(data).unwrap();
+        let command = &v["command"];
+
+        if command == "message" {
+            let data = &v["data"].as_str().unwrap();
+        } else {
+            let data = "";
+        }
+
+        let channel = &v["identifier"];
+        let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
+
+        let reply = rpc_client.lock().unwrap().
+            command(command.to_string(),
+                    identifiers.to_string(),
+                    channel.as_str().unwrap().to_string(),
+                    data.to_string());
+
+        handle_rpc_command_resp(connections.clone(),
+                                streams.clone(),
+                                addr, channel.as_str().unwrap().to_string(),
+                                reply);
+    } else {
+        println!("handle_rpc_command: empty data");
+    }
+}
 
 fn close_connection(
     connections: Arc<Mutex<Connections>>,
@@ -235,53 +268,12 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                         let ws_reader = stream.for_each(move |mut message: Message| {
                             let data = message.to_text().unwrap();
-                            if data != "" {
-                                let v: Value = serde_json::from_str(data).unwrap();
-                                let command = &v["command"];
 
-                                if command == "subscribe" {
-                                    let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        subscribe(identifiers.to_string(),
-                                                  channel.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                } else if command == "unsubscribe" {
-                                    let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        unsubscribe(identifiers.to_string(),
-                                                    channel.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                } else if command == "message" {
-                                    let channel = &v["identifier"];
-                                    let data = &v["data"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        message(identifiers.to_string(),
-                                                channel.as_str().unwrap().to_string(),
-                                                data.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                }
-                            } else {
-                                println!("empty data");
-                            }
-
+                            handle_user_command(connections.clone(),
+                                                streams_inner.clone(),
+                                                rpc_client_inner.clone(),
+                                                addr,
+                                                data);
                             Ok(())
                         });
 
