@@ -13,7 +13,7 @@ use std::env;
 use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 
-use protos::anycable::{Status, CommandResponse};
+use protos::anycable::{Status, CommandResponse, ConnectionResponse};
 
 use futures::Future;
 use futures::Sink;
@@ -133,6 +133,23 @@ fn handle_rpc_command_resp(
         start_channel_streams(connections, streams, addr, channel, respone);
     }
 }
+
+fn handle_rpc_conn_resp(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    addr: SocketAddr,
+    sender: Sender,
+    respone: ConnectionResponse) {
+
+    let connection = self::connections::Connection::new(sender, respone.get_identifiers().to_string());
+    connections.lock().unwrap().add_conn(addr, connection);
+
+    for t in respone.get_transmissions().iter() {
+        connections.lock().unwrap().
+            send_msg_to_conn(&addr, t.to_string());
+    }
+}
+
 fn handle_user_command(
     connections: Arc<Mutex<Connections>>,
     streams: Arc<Mutex<Streams>>,
@@ -184,7 +201,6 @@ fn close_connection(
     connections.lock().unwrap().remove_conn(&addr);
     println!("Connection {} closed.", addr);
 }
-
 
 pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio::executor::Spawn {
     let rpc_client = Arc::new(Mutex::new(rpc::Client::new("localhost:50051")));
@@ -255,12 +271,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                     Status::SUCCESS => {
                         let (tx, rx) = futures::sync::mpsc::unbounded();
 
-                        let connection = self::connections::Connection::new(tx, reply.get_identifiers().to_string());
-                        connections_inner.lock().unwrap().add_conn(addr, connection);
-
-                        for t in reply.get_transmissions().iter() {
-                            connections_inner.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
-                        }
+                        handle_rpc_conn_resp(connections_inner.clone(),
+                                             streams_inner.clone(),
+                                             addr,
+                                             tx,
+                                             reply);
 
                         let (mut sink, stream) = ws_stream.split();
 
@@ -306,8 +321,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                     }
                 }
                 Ok(())
-
-
             })
             .map_err(|e| {
                 println!("Error during the websocket handshake occurred: {}", e);
