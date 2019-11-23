@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use futures::Future;
 use futures::Sink;
 use futures::stream::Stream;
-use futures::sync::mpsc;
 
 use tokio::net::TcpListener;
 use tokio::timer::Interval;
@@ -27,44 +26,14 @@ use serde_json::json;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// redis
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use redis_async::resp::FromResp;
+
+
 use tokio::prelude::*;
 
-struct RedisConsumer {
-    msg_queue: mpsc::UnboundedReceiver<String>,
-    server: Arc<Mutex<Server>>,
-}
-
-impl Future for RedisConsumer {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        const TICK: usize = 10;
-
-        for i in 0..TICK {
-            match self.msg_queue.poll().unwrap() {
-                Async::Ready(Some(v)) => {
-                    let v: Value = serde_json::from_str(&v).unwrap();
-                    let stream = &v["stream"];
-                    let raw_data = &v["data"];
-                    let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
-
-                    self.server.lock().unwrap().
-                        broadcast_to_stream(stream.as_str().unwrap(), data);
-
-                    if i + 1 == TICK {
-                        task::current().notify();
-                    }
-                }
-                _ => break,
-            }
-        }
-
-        Ok(Async::NotReady)
-    }
-}
-
-pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio::executor::Spawn {
+pub fn start_ws_server() -> tokio::executor::Spawn {
     let addr = env::args().nth(1).unwrap_or("127.0.0.1:3334".to_string());
     let addr = addr.parse().unwrap();
 
@@ -73,16 +42,30 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
     let server = Arc::new(Mutex::new(Server::new("localhost:50051")));
 
+    let server1 = server.clone();
+    let redis_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6379);
+    let redis_loop = redis_async::client::pubsub_connect(&redis_addr).
+        and_then(move |connection| connection.subscribe("__anycable__")).
+        map_err(|e| eprintln!("error: cannot receive messages. error={:?}", e)).
+        and_then(move |msgs| {
+            msgs.for_each(move |message| {
+                let v = String::from_resp(message).unwrap();
+                let v: Value = serde_json::from_str(&v).unwrap();
+                let stream = &v["stream"];
+                let raw_data = &v["data"];
+                let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
+
+                server1.lock().unwrap().
+                    broadcast_to_stream(stream.as_str().unwrap(), data);
+                future::ok(())
+            }).map_err(|e| eprintln!("error: redis subscribe stoped, error {:?}", e))
+        });
+
+    tokio::spawn(redis_loop);
+
     let server_inner = server.clone();
 
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
-
-    let rerdis_consumer = RedisConsumer{
-        msg_queue: redis_receiver,
-        server: server.clone()
-    };
-
-    tokio::spawn(rerdis_consumer);
 
     let srv = socket.incoming().for_each(move |stream| {
         let addr = stream
