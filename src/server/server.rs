@@ -20,6 +20,7 @@ pub struct Server {
     rpc_client: super::rpc::Client
 }
 
+
 impl Server {
     pub fn new(host: &str) -> Server {
         Server {
@@ -82,6 +83,21 @@ impl Server {
 
         self.connections.remove_conn(&addr);
         println!("Connection {} closed.", addr);
+    }
+
+    pub fn broadcast_to_stream(
+        &self,
+        stream_name: &str,
+        message: Value) {
+
+        for stream in self.streams.get(stream_name).iter() {
+            let msg = json!({
+                "identifier": stream.channel,
+                "message": message
+            });
+
+            self.connections.send_msg_to_conn(&stream.addr, msg.to_string());
+        }
     }
 
     fn stop_channel_streams(
