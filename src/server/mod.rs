@@ -177,9 +177,9 @@ fn handle_user_command(
     streams: Arc<Mutex<Streams>>,
     rpc_client: Arc<Mutex<rpc::Client>>,
     addr: SocketAddr,
-    data: &str) {
-    if data != "" {
-        let v: Value = serde_json::from_str(data).unwrap();
+    message: &str) {
+    if message != "" {
+        let v: Value = serde_json::from_str(message).unwrap();
         let command = &v["command"];
         let mut command_data = "";
 
@@ -201,7 +201,7 @@ fn handle_user_command(
                                 addr, channel.as_str().unwrap().to_string(),
                                 reply);
     } else {
-        println!("handle_rpc_command: empty data");
+        println!("handle_rpc_command: empty message");
     }
 }
 
