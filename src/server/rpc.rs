@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::{HashMap};
 
 use protos::anycable_grpc::RpcClient;
@@ -6,8 +6,7 @@ use grpcio::{ChannelBuilder, EnvBuilder};
 
 use protos::anycable::{ConnectionRequest, ConnectionResponse,
                        CommandMessage, CommandResponse,
-                       DisconnectRequest, DisconnectResponse,
-                       Status};
+                       DisconnectRequest, DisconnectResponse};
 
 use protobuf::RepeatedField;
 
@@ -47,18 +46,6 @@ impl Client {
         req.set_data(data);
 
         self.client.command(&req).expect("rpc")
-    }
-
-    pub fn subscribe(&self, identifiers: String, channel: String) -> CommandResponse {
-        self.command("subscribe".to_string(), identifiers, channel, "".to_string())
-    }
-
-    pub fn unsubscribe(&self, identifiers: String, channel: String) -> CommandResponse {
-        self.command("unsubscribe".to_string(), identifiers, channel, "".to_string())
-    }
-
-    pub fn message(&self, identifiers: String, channel: String, data: String) -> CommandResponse {
-        self.command("message".to_string(), identifiers, channel, data)
     }
 
     pub fn disconnect(&self, id: String, channels: Vec<String>) -> DisconnectResponse {

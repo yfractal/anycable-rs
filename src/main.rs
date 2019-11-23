@@ -4,23 +4,8 @@ mod server;
 
 use std::thread;
 // use tokio::net::TcpListener;
-use std::sync::{Arc, Mutex};
 use futures::future::lazy;
 use futures::sync::mpsc;
-use tokio::prelude::*;
-
-use bytes::Bytes;
-
-use std::collections::HashMap;
-use std::env;
-use std::io::{Error, ErrorKind};
-
-use futures::stream::Stream;
-use futures::Future;
-use tokio::net::TcpListener;
-use tungstenite::protocol::Message;
-
-use tokio_tungstenite::accept_async;
 
 fn do_sub(tx: mpsc::UnboundedSender<String>) -> () {
     let client = redis::Client::open("redis://127.0.0.1/").unwrap();

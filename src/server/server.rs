@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use protos::anycable::{Status, CommandResponse, ConnectionResponse};
 
-use serde_json::{Result, Value};
+use serde_json::Value;
 use serde_json::json;
 
 use futures::sync::mpsc;
@@ -75,7 +75,7 @@ impl Server {
     pub fn disconnect(&mut self, addr: SocketAddr) {
         let identifiers = self.connections.get_conn_identifiers(&addr);
         let channels = self.connections.get_conn_channels_vec(&addr);
-        let reply = self.rpc_client.disconnect(identifiers, channels);
+        let _reply = self.rpc_client.disconnect(identifiers, channels);
 
         for stream in self.connections.get_conn_streams(&addr).iter() {
             self.streams.remove_stream(&stream.name, addr, stream.channel.to_string());
@@ -114,7 +114,7 @@ impl Server {
         for stream in self.connections.get_conn_streams(&addr) {
             self.streams.remove_stream(&stream.name, addr, stream.channel.to_string());
 
-            if (stream.channel == channel) {
+            if stream.channel == channel {
                 streams_to_delete.push(stream.name.to_string());
             }
         }
