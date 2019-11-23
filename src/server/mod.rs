@@ -1,19 +1,14 @@
 pub mod streams;
-
 pub mod connections;
-
 mod rpc;
+mod server;
 
-use connections::Connection;
-use connections::Connections;
-use streams::Streams;
+use server::Server;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
-
-use protos::anycable::{Status, CommandResponse};
 
 use futures::Future;
 use futures::Sink;
@@ -24,13 +19,9 @@ use tokio::net::TcpListener;
 use tokio::timer::Interval;
 
 use tungstenite::protocol::Message;
+use tungstenite::handshake::server::{Request};
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::accept_async;
-
-use std::net::SocketAddr;
-
-use tungstenite::handshake::server::{ErrorResponse, Request};
-use tungstenite::http::StatusCode;
 
 use serde_json::{Result, Value};
 use serde_json::json;
@@ -38,16 +29,11 @@ use serde_json::json;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-
 use tokio::prelude::*;
 
-type Sender = mpsc::UnboundedSender<Message>;
-
-#[derive(Debug)]
 struct RedisConsumer {
-    connections: Arc<Mutex<connections::Connections>>,
     msg_queue: mpsc::UnboundedReceiver<String>,
-    streams: Arc<Mutex<streams::Streams>>,
+    server: Arc<Mutex<Server>>,
 }
 
 impl Future for RedisConsumer {
@@ -64,14 +50,9 @@ impl Future for RedisConsumer {
                     let stream = &v["stream"];
                     let raw_data = &v["data"];
                     let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
-                    for stream in self.streams.lock().unwrap().get(stream.as_str().unwrap()).iter() {
-                        let msg = json!({
-                            "identifier": stream.channel,
-                            "message": data
-                        });
-                        self.connections.lock().unwrap().
-                            send_msg_to_conn(&stream.addr, msg.to_string());
-                    }
+
+                    self.server.lock().unwrap().
+                        broadcast_to_stream(stream.as_str().unwrap(), data);
 
                     if i + 1 == TICK {
                         task::current().notify();
@@ -85,74 +66,6 @@ impl Future for RedisConsumer {
     }
 }
 
-fn stop_channel_streams(connections: Arc<Mutex<Connections>>,
-                        streams: Arc<Mutex<Streams>>,
-                        addr: SocketAddr,
-                        channel: &str) {
-    connections.lock().unwrap().stop_streams(streams.clone(), addr, &channel);
-}
-
-fn start_channel_streams(
-    connections: Arc<Mutex<Connections>>,
-    streams: Arc<Mutex<Streams>>,
-    addr: SocketAddr,
-    channel: String,
-    respone: CommandResponse) {
-
-    for stream in respone.get_streams().iter() {
-        streams.lock().unwrap().
-            put_stream(stream, addr, channel.to_string());
-
-        connections.lock().unwrap().add_stream_to_conn(&addr, stream.to_string(), channel.to_string());
-    }
-}
-
-fn handle_rpc_command_resp(
-    connections: Arc<Mutex<Connections>>,
-    streams: Arc<Mutex<Streams>>,
-    addr: SocketAddr,
-    channel: String,
-    respone: CommandResponse) {
-
-    for t in respone.get_transmissions().iter() {
-        connections.lock().unwrap().
-            send_msg_to_conn(&addr, t.to_string());
-    }
-
-    if respone.get_disconnect() {
-        connections.lock().unwrap().send_msg_to_conn(&addr, "disconnect!".to_string());
-
-        return ();
-    }
-    if respone.get_stop_streams() {
-        // follow erlycable implemention, hope it's not a bug, more info as below:
-        // https://github.com/anycable/erlycable/blob/master/src/erlycable_server.erl#L242-L244
-        stop_channel_streams(connections.clone(), streams.clone(), addr, &channel);
-        start_channel_streams(connections, streams, addr, channel, respone);
-    } else {
-        start_channel_streams(connections, streams, addr, channel, respone);
-    }
-}
-
-fn close_connection(
-    connections: Arc<Mutex<Connections>>,
-    streams: Arc<Mutex<Streams>>,
-    addr: SocketAddr,
-    rpc_client: Arc<Mutex<rpc::Client>>) {
-
-    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-    let channels = connections.lock().unwrap().get_conn_channels_vec(&addr);
-    let reply = rpc_client.lock().unwrap().disconnect(identifiers, channels);
-
-    for stream in connections.lock().unwrap().get_conn_streams(&addr).iter() {
-        streams.lock().unwrap().remove_stream(&stream.name, addr, stream.channel.to_string());
-    }
-
-    connections.lock().unwrap().remove_conn(&addr);
-    println!("Connection {} closed.", addr);
-}
-
-
 pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio::executor::Spawn {
     let rpc_client = Arc::new(Mutex::new(rpc::Client::new("localhost:50051")));
 
@@ -162,17 +75,17 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     let socket = TcpListener::bind(&addr).unwrap();
     println!("Listening on: {}", addr);
 
-    let connections = Arc::new(Mutex::new(connections::Connections::new()));
-    let connections_inner = connections.clone();
-    let streams = Arc::new(Mutex::new(streams::Streams::new()));
+    let server = Arc::new(Mutex::new(Server::new("localhost:50051")));
+
+    let server_inner = server.clone();
 
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
 
     let rerdis_consumer = RedisConsumer{
-        connections: connections.clone(),
         msg_queue: redis_receiver,
-        streams: streams.clone(),
+        server: server.clone()
     };
+
     tokio::spawn(rerdis_consumer);
 
     let srv = socket.incoming().for_each(move |stream| {
@@ -181,10 +94,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
             .expect("connected streams should have a peer address");
         println!("Peer address: {}", addr);
 
-        let connections_inner = connections.clone();
-
-        let streams_inner = streams.clone();
-        let streams_inner2 = streams.clone();
+        let server_inner = server.clone();
+        let server_inner2 = server.clone();
 
         let addr_to_header_inner = addr_to_header.clone();
 
@@ -213,74 +124,23 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                 println!("New WebSocket connection: {}", addr);
 
                 let headers = addr_to_header_inner.lock().unwrap().remove(&addr).unwrap();
-                let rpc_client = rpc_client_inner.clone();
 
-                let reply = rpc_client_inner.lock().unwrap().
-                    connect(headers);
+                let (tx, rx) = futures::sync::mpsc::unbounded();
 
-                match reply.get_status() {
-                    Status::SUCCESS => {
-                        let (tx, rx) = futures::sync::mpsc::unbounded();
-
-                        let connection = self::connections::Connection::new(tx, reply.get_identifiers().to_string());
-                        connections_inner.lock().unwrap().add_conn(addr, connection);
-
-                        for t in reply.get_transmissions().iter() {
-                            connections_inner.lock().unwrap().send_msg_to_conn(&addr, t.to_string());
-                        }
+                match server_inner.lock().unwrap().
+                    connect(addr, headers, tx) {
+                    true => {
+                        let rpc_client = rpc_client_inner.clone();
 
                         let (mut sink, stream) = ws_stream.split();
 
-                        let connections = connections_inner.clone();
+                        let server = server_inner.clone();
 
                         let ws_reader = stream.for_each(move |mut message: Message| {
                             let data = message.to_text().unwrap();
-                            if data != "" {
-                                let v: Value = serde_json::from_str(data).unwrap();
-                                let command = &v["command"];
 
-                                if command == "subscribe" {
-                                    let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        subscribe(identifiers.to_string(),
-                                                  channel.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                } else if command == "unsubscribe" {
-                                    let channel = &v["identifier"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        unsubscribe(identifiers.to_string(),
-                                                    channel.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                } else if command == "message" {
-                                    let channel = &v["identifier"];
-                                    let data = &v["data"];
-                                    let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
-
-                                    let reply = rpc_client_inner.lock().unwrap().
-                                        message(identifiers.to_string(),
-                                                channel.as_str().unwrap().to_string(),
-                                                data.as_str().unwrap().to_string());
-
-                                    handle_rpc_command_resp(connections.clone(),
-                                                            streams_inner.clone(),
-                                                            addr, channel.as_str().unwrap().to_string(),
-                                                            reply);
-                                }
-                            } else {
-                                println!("empty data");
-                            }
+                            server.lock().unwrap().
+                                receive_message(addr, data);
 
                             Ok(())
                         });
@@ -301,10 +161,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                             .select(ws_writer.map(|_| ()).map_err(|_| ()));
 
                         tokio::spawn(connection.then(move |_| {
-                            close_connection(connections_inner.clone(),
-                                             streams_inner2.clone(),
-                                             addr,
-                                             rpc_client.clone());
+                            server_inner2.clone().lock().unwrap().
+                                disconnect(addr);
 
                             Ok(())
                         }));
@@ -314,8 +172,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                     }
                 }
                 Ok(())
-
-
             })
             .map_err(|e| {
                 println!("Error during the websocket handshake occurred: {}", e);
@@ -334,7 +190,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                 "type": "ping",
                 "message": since.as_secs(),
             });
-            connections_inner.lock().unwrap().broadcast(msg.to_string());
+
+            server_inner.lock().unwrap().broadcast(msg.to_string());
 
             Ok(())
         }).map_err(|e| ());
