@@ -1,12 +1,12 @@
 pub mod streams;
-
 pub mod connections;
-
 mod rpc;
+mod server;
 
 use connections::Connection;
 use connections::Connections;
 use streams::Streams;
+use server::Server;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -150,6 +150,28 @@ fn handle_rpc_conn_resp(
     }
 }
 
+fn connect(
+    connections: Arc<Mutex<Connections>>,
+    streams: Arc<Mutex<Streams>>,
+    rpc_client: Arc<Mutex<rpc::Client>>,
+
+    addr: SocketAddr,
+    headers: HashMap<String, String>,
+    sender: Sender) -> bool {
+
+    let response = rpc_client.lock().unwrap().connect(headers);
+    match response.get_status() {
+        Status::SUCCESS => {
+            handle_rpc_conn_resp(connections, streams, addr, sender, response);
+
+            true
+        },
+        _ =>
+            false
+    }
+
+}
+
 fn handle_user_command(
     connections: Arc<Mutex<Connections>>,
     streams: Arc<Mutex<Streams>>,
@@ -223,6 +245,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
     };
     tokio::spawn(rerdis_consumer);
 
+    let server = Arc::new(Mutex::new(Server::new("localhost:50051")));
+
     let srv = socket.incoming().for_each(move |stream| {
         let addr = stream
             .peer_addr()
@@ -233,6 +257,8 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
         let streams_inner = streams.clone();
         let streams_inner2 = streams.clone();
+
+        let server_inner = server.clone();
 
         let addr_to_header_inner = addr_to_header.clone();
 
@@ -261,20 +287,12 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                 println!("New WebSocket connection: {}", addr);
 
                 let headers = addr_to_header_inner.lock().unwrap().remove(&addr).unwrap();
-                let rpc_client = rpc_client_inner.clone();
 
-                let reply = rpc_client_inner.lock().unwrap().
-                    connect(headers);
+                let (tx, rx) = futures::sync::mpsc::unbounded();
 
-                match reply.get_status() {
-                    Status::SUCCESS => {
-                        let (tx, rx) = futures::sync::mpsc::unbounded();
-
-                        handle_rpc_conn_resp(connections_inner.clone(),
-                                             streams_inner.clone(),
-                                             addr,
-                                             tx,
-                                             reply);
+                match connect(connections_inner.clone(), streams_inner.clone(), rpc_client_inner.clone(), addr,headers, tx) {
+                    true => {
+                        let rpc_client = rpc_client_inner.clone();
 
                         let (mut sink, stream) = ws_stream.split();
 
@@ -283,6 +301,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                         let ws_reader = stream.for_each(move |mut message: Message| {
                             let data = message.to_text().unwrap();
 
+                            // receive_message
                             handle_user_command(connections.clone(),
                                                 streams_inner.clone(),
                                                 rpc_client_inner.clone(),
