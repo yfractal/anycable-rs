@@ -159,21 +159,20 @@ fn handle_user_command(
     if data != "" {
         let v: Value = serde_json::from_str(data).unwrap();
         let command = &v["command"];
+        let mut command_data = "";
 
         if command == "message" {
-            let data = &v["data"].as_str().unwrap();
-        } else {
-            let data = "";
+            command_data = &v["data"].as_str().unwrap();
         }
 
         let channel = &v["identifier"];
         let identifiers = connections.lock().unwrap().get_conn_identifiers(&addr);
 
         let reply = rpc_client.lock().unwrap().
-            command(command.to_string(),
+            command(command.as_str().unwrap().to_string(),
                     identifiers.to_string(),
                     channel.as_str().unwrap().to_string(),
-                    data.to_string());
+                    command_data.to_string());
 
         handle_rpc_command_resp(connections.clone(),
                                 streams.clone(),
