@@ -1,4 +1,4 @@
-use super::Streams;
+use super::streams::Streams;
 
 use futures::sync::mpsc;
 

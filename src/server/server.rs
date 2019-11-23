@@ -1,5 +1,5 @@
-use super::Streams;
-use super::Connections;
+use super::streams::Streams;
+use super::connections::Connections;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -98,6 +98,10 @@ impl Server {
 
             self.connections.send_msg_to_conn(&stream.addr, msg.to_string());
         }
+    }
+
+    pub fn broadcast(&self, message: String) {
+        self.connections.broadcast(message);
     }
 
     fn stop_channel_streams(
