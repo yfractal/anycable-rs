@@ -1,5 +1,4 @@
 // #![deny(warnings, rust_2018_idioms)]
-mod ws_server;
 mod server;
 // extern crate websocket;
 
