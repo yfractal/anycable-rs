@@ -5,9 +5,8 @@ mod server;
 
 use server::Server;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
-use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 
 use futures::Future;
@@ -21,9 +20,8 @@ use tokio::timer::Interval;
 use tungstenite::protocol::Message;
 use tungstenite::handshake::server::{Request};
 use tokio_tungstenite::accept_hdr_async;
-use tokio_tungstenite::accept_async;
 
-use serde_json::{Result, Value};
+use serde_json::Value;
 use serde_json::json;
 
 use std::time::Duration;
@@ -67,8 +65,6 @@ impl Future for RedisConsumer {
 }
 
 pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio::executor::Spawn {
-    let rpc_client = Arc::new(Mutex::new(rpc::Client::new("localhost:50051")));
-
     let addr = env::args().nth(1).unwrap_or("127.0.0.1:3334".to_string());
     let addr = addr.parse().unwrap();
 
@@ -99,8 +95,6 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
         let addr_to_header_inner = addr_to_header.clone();
 
-        let rpc_client_inner = rpc_client.clone();
-
         let callback = move |req: &Request| {
             let mut headers = HashMap::new();
 
@@ -130,13 +124,11 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                 match server_inner.lock().unwrap().
                     connect(addr, headers, tx) {
                     true => {
-                        let rpc_client = rpc_client_inner.clone();
-
-                        let (mut sink, stream) = ws_stream.split();
+                        let (sink, stream) = ws_stream.split();
 
                         let server = server_inner.clone();
 
-                        let ws_reader = stream.for_each(move |mut message: Message| {
+                        let ws_reader = stream.for_each(move |message: Message| {
                             let data = message.to_text().unwrap();
 
                             server.lock().unwrap().
@@ -147,7 +139,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
 
                         let ws_writer = rx.fold(sink, |mut sink, msg| {
                             if msg.to_text().unwrap() == "disconnect!" {
-                                sink.close();
+                                sink.close().unwrap();
                             } else {
                                 sink.start_send(msg).unwrap();
                             }
@@ -168,7 +160,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
                         }));
                     },
                     _ => {
-                        ws_stream.close();
+                        ws_stream.close().unwrap();
                     }
                 }
                 Ok(())
@@ -194,7 +186,7 @@ pub fn start_ws_server(redis_receiver: mpsc::UnboundedReceiver<String>) -> tokio
             server_inner.lock().unwrap().broadcast(msg.to_string());
 
             Ok(())
-        }).map_err(|e| ());
+        }).map_err(|_e| ());
 
     tokio::spawn(ping_interval);
 
