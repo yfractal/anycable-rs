@@ -9,6 +9,11 @@ use protos::anycable::{Status, CommandResponse, ConnectionResponse};
 use serde_json::{Result, Value};
 use serde_json::json;
 
+use futures::sync::mpsc;
+use tungstenite::protocol::Message;
+
+type Sender = mpsc::UnboundedSender<Message>;
+
 pub struct Server {
     connections:  Connections,
     streams: Streams,
@@ -24,10 +29,15 @@ impl Server {
         }
     }
 
-    pub fn connect(&self, addr: SocketAddr, headers: HashMap<String, String>) -> bool {
-        let resp =  self.rpc_client.connect(headers);
-        match resp.get_status() {
+    pub fn connect(&mut self,
+                   addr: SocketAddr,
+                   headers: HashMap<String, String>,
+                   sender: Sender) -> bool {
+        let response = self.rpc_client.connect(headers);
+
+        match response.get_status() {
             Status::SUCCESS => {
+                self.handle_rpc_conn_resp(addr, sender, response);
                 true
             },
             _ => false
@@ -59,6 +69,19 @@ impl Server {
         } else {
             println!("handle_rpc_command: empty message");
         }
+    }
+
+    pub fn disconnect(&mut self, addr: SocketAddr) {
+        let identifiers = self.connections.get_conn_identifiers(&addr);
+        let channels = self.connections.get_conn_channels_vec(&addr);
+        let reply = self.rpc_client.disconnect(identifiers, channels);
+
+        for stream in self.connections.get_conn_streams(&addr).iter() {
+            self.streams.remove_stream(&stream.name, addr, stream.channel.to_string());
+        }
+
+        self.connections.remove_conn(&addr);
+        println!("Connection {} closed.", addr);
     }
 
     fn stop_channel_streams(
@@ -94,6 +117,21 @@ impl Server {
         }
     }
 
+    fn handle_rpc_conn_resp(
+        &mut self,
+        addr: SocketAddr,
+        sender: Sender,
+        respone: ConnectionResponse) {
+
+        let connection = super::connections::Connection::new(sender, respone.get_identifiers().to_string());
+        self.connections.add_conn(addr, connection);
+
+        for t in respone.get_transmissions().iter() {
+            self.connections.
+                send_msg_to_conn(&addr, t.to_string());
+        }
+    }
+
     fn handle_rpc_command_resp(
         &mut self,
         addr: SocketAddr,
@@ -120,19 +158,3 @@ impl Server {
         }
     }
 }
-
-// fn connect() -> {
-
-// }
-
-// fn connected() -> {
-
-// }
-
-// fn receive_message() -> {
-
-// }
-
-// fn close_connection() -> {
-
-// }
