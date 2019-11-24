@@ -3,6 +3,9 @@ use super::connections::Connections;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use protos::anycable::{Status, CommandResponse, ConnectionResponse};
 
@@ -11,6 +14,11 @@ use serde_json::json;
 
 use futures::sync::mpsc;
 use tungstenite::protocol::Message;
+
+use redis_async::resp::FromResp;
+
+use tokio::timer::Interval;
+use tokio::prelude::*;
 
 type Sender = mpsc::UnboundedSender<Message>;
 
@@ -177,4 +185,60 @@ impl Server {
             self.start_channel_streams(addr, channel, respone);
         }
     }
+}
+
+fn start_ping_task(server: Arc<Mutex<Server>>) {
+    let ping_interval = Interval::new_interval(Duration::from_millis(3000))
+        .for_each(move |_| {
+            let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let msg = json!({
+                "type": "ping",
+                "message": since.as_secs(),
+            });
+
+            server.lock().unwrap().broadcast(msg.to_string());
+
+            Ok(())
+        }).map_err(|_e| ());
+
+    tokio::spawn(ping_interval);
+}
+
+fn start_redis_task(
+    server: Arc<Mutex<Server>>,
+    addr: SocketAddr,
+    topic: String) {
+    let redis_loop = redis_async::client::pubsub_connect(&addr).
+        and_then(move |connection| connection.subscribe(&topic)).
+        map_err(|e| eprintln!("error: cannot receive messages. error={:?}", e)).
+        and_then(move |msgs| {
+            msgs.for_each(move |message| {
+                let v = String::from_resp(message).unwrap();
+                let v: Value = serde_json::from_str(&v).unwrap();
+                let stream = &v["stream"];
+                let raw_data = &v["data"];
+                let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
+
+                server.lock().unwrap().
+                    broadcast_to_stream(stream.as_str().unwrap(), data);
+                future::ok(())
+            }).map_err(|e| eprintln!("error: redis subscribe stoped, error {:?}", e))
+        });
+
+    tokio::spawn(redis_loop);
+}
+
+pub fn start(
+    redis_addr: SocketAddr,
+    redis_topic: &str,
+    rpc_host: &str) -> Arc<Mutex<Server>> {
+
+    // create server struct
+    let server = Arc::new(Mutex::new(Server::new(rpc_host)));
+
+    // start task
+    start_redis_task(server.clone(), redis_addr, redis_topic.to_string());
+    start_ping_task(server.clone());
+
+    server
 }
