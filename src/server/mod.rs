@@ -3,8 +3,6 @@ pub mod connections;
 mod rpc;
 mod server;
 
-use server::Server;
-
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, Mutex};
@@ -14,24 +12,12 @@ use futures::Sink;
 use futures::stream::Stream;
 
 use tokio::net::TcpListener;
-use tokio::timer::Interval;
 
 use tungstenite::protocol::Message;
 use tungstenite::handshake::server::{Request};
 use tokio_tungstenite::accept_hdr_async;
 
-use serde_json::Value;
-use serde_json::json;
-
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-// redis
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use redis_async::resp::FromResp;
-
-
-use tokio::prelude::*;
 
 pub fn start_ws_server() -> tokio::executor::Spawn {
     let addr = env::args().nth(1).unwrap_or("127.0.0.1:3334".to_string());
@@ -40,30 +26,9 @@ pub fn start_ws_server() -> tokio::executor::Spawn {
     let socket = TcpListener::bind(&addr).unwrap();
     println!("Listening on: {}", addr);
 
-    let server = Arc::new(Mutex::new(Server::new("localhost:50051")));
-
-    let server1 = server.clone();
     let redis_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6379);
-    let redis_loop = redis_async::client::pubsub_connect(&redis_addr).
-        and_then(move |connection| connection.subscribe("__anycable__")).
-        map_err(|e| eprintln!("error: cannot receive messages. error={:?}", e)).
-        and_then(move |msgs| {
-            msgs.for_each(move |message| {
-                let v = String::from_resp(message).unwrap();
-                let v: Value = serde_json::from_str(&v).unwrap();
-                let stream = &v["stream"];
-                let raw_data = &v["data"];
-                let data: Value = serde_json::from_str(raw_data.as_str().unwrap()).unwrap();
 
-                server1.lock().unwrap().
-                    broadcast_to_stream(stream.as_str().unwrap(), data);
-                future::ok(())
-            }).map_err(|e| eprintln!("error: redis subscribe stoped, error {:?}", e))
-        });
-
-    tokio::spawn(redis_loop);
-
-    let server_inner = server.clone();
+    let server = server::start(redis_addr , "__anycable__", "localhost:50051");
 
     let addr_to_header = Arc::new(Mutex::new(HashMap::new()));
 
@@ -157,21 +122,6 @@ pub fn start_ws_server() -> tokio::executor::Spawn {
         // always return ok
         Ok(())
     }).map_err(|_e| ());
-
-    let ping_interval = Interval::new_interval(Duration::from_millis(3000))
-        .for_each(move |_| {
-            let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let msg = json!({
-                "type": "ping",
-                "message": since.as_secs(),
-            });
-
-            server_inner.lock().unwrap().broadcast(msg.to_string());
-
-            Ok(())
-        }).map_err(|_e| ());
-
-    tokio::spawn(ping_interval);
 
     tokio::spawn(srv)
 }
